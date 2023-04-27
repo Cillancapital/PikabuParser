@@ -5,6 +5,8 @@ import aiohttp
 import random
 import json
 
+from bs4 import BeautifulSoup
+
 PIKABU_DB_LIMIT = 300
 
 
@@ -109,7 +111,6 @@ class StoryCommentsParser:
         self.comments_json = self.proceed_get_story_comments_request()['data']
 
         print(f'We got {len(self.comments_json)} comments in story No {self.story_id}')
-        print(self.comments_json)
 
     @staticmethod
     def set_anti_ddos_headers():
@@ -134,7 +135,7 @@ class StoryCommentsParser:
         start = time.time()
         child_comments = await asyncio.gather(*tasks)
         print(time.time() - start)
-        print(1)
+
         # make a request trying to get 300 comments.
         return child_comments
         #return [{'child': "Im a list of child Comment objects"}]
@@ -222,34 +223,6 @@ class StoryCommentsParser:
         dict_to_return['message'] = f"We have got {len(dict_to_return['data'])} root comments"
         return dict_to_return
 
-    def proceed_get_story_comments_request_old(self):
-        dict_to_return = {'error_code': 0,
-                          'message': '',
-                          'data': []
-                          }
-        # Get all the root comments from the post
-        root_comments = self.get_root_comments()['data']
-
-        for root_comment in root_comments:
-
-            # If the comment is a post, let's parse the post
-            story_id = root_comment.post_id_if_comment_is_post
-            if story_id:
-
-                dict_to_return['data'].append(root_comment)
-                dict_to_return['data'].append(StoryCommentsParser(story_id=story_id).comments_json)
-
-            # If the comment has children, let's search deeper------------------------------
-            elif root_comment.has_children:
-                dict_to_return['data'].append(root_comment)
-                dict_to_return['data'].append(self.get_children(root_comment))
-
-            # No children, not a post
-            else:
-                dict_to_return['data'].append(root_comment)
-
-        return dict_to_return
-
     def proceed_get_story_comments_request(self):
         dict_to_return = {'error_code': 0,
                           'message': '',
@@ -266,14 +239,17 @@ class StoryCommentsParser:
         dict_to_return['data'] += comments_posts
 
         children = asyncio.run(self.get_children(comments_with_children))
-
+        print(len(children))
+        html_children_comments_list = []
+        for each in children:
+            soup = BeautifulSoup(each['html comments'], 'lxml')
+            each_list = [each for each in soup.findAll('div', class_='comment')]
+            html_children_comments_list.extend(each_list)
         return dict_to_return
 
 
 if __name__ == '__main__':
     #a = StoryCommentsParser(story_id=10085566)  # https://pikabu.ru/story/biznes_ideya_10085566#comments 1900 comments
-    # a = StoryCommentsParser(story_id=10158233)
-    # a = StoryCommentsParser(story_id=10161553) #320 comments
-    # a = StoryCommentsParser(story_id=10163126)
-    a = StoryCommentsParser(story_id=5_555_555) #10 comments
+    a = StoryCommentsParser(story_id=10161553) #492 comments
+    #a = StoryCommentsParser(story_id=5_555_555) #10 comments
     # a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
