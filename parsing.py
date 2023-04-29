@@ -108,9 +108,12 @@ class StoryCommentsParser:
 
     def __init__(self, story_id):
         self.story_id = story_id
-        self.comments_json = self.proceed_get_story_comments_request()['data']
+        self.comments = self.proceed_get_story_comments_request()['data']
 
-        print(f'We got {len(self.comments_json)} comments in story No {self.story_id}')
+        print(f'We got {len(self.comments)} comments in story No {self.story_id}')
+
+        ids = [each.id for each in self.comments]
+        print('Ids: ', *ids)
 
     @staticmethod
     def set_anti_ddos_headers():
@@ -134,11 +137,12 @@ class StoryCommentsParser:
 
         start = time.time()
         child_comments = await asyncio.gather(*tasks)
+        # Todo if make_php_request returns more than 300 comments start another parsing
+
         print(time.time() - start)
 
         # make a request trying to get 300 comments.
         return child_comments
-        #return [{'child': "Im a list of child Comment objects"}]
 
     async def make_php_request(self, action, **kwargs):
         php_request = 'https://pikabu.ru/ajax/comments_actions.php'
@@ -231,25 +235,66 @@ class StoryCommentsParser:
         # Get all the root comments from the post
         root_comments = self.get_root_comments()['data']
 
-        comments_with_children = [root_comment for root_comment in root_comments if root_comment.has_children()]
-        comments_without_children = [root_comment for root_comment in root_comments if not root_comment.has_children()]
         comments_posts = [root_comment for root_comment in root_comments if root_comment.is_post()]
+        comments_with_children = [root_comment for root_comment in root_comments if root_comment.has_children()]
+        comments_without_children = [root_comment for root_comment in root_comments
+                                     if not root_comment.has_children() and root_comment not in comments_posts]
+
+        children = asyncio.run(self.get_children(comments_with_children))
+        html_children_comments_list = []
+        for big_html_of_children in children:
+            soup = BeautifulSoup(big_html_of_children['html comments'], 'lxml')
+            each_comment_html_list = [each.prettify() for each in soup.findAll('div', class_='comment')]
+            html_children_comments_list.extend(each_comment_html_list)
+
+        list_of_children_Comments = [self.convert_html_comment_to_Comment(each) for each in html_children_comments_list]
+
+        dict_to_return['data'] += comments_with_children
+        dict_to_return['data'] += list_of_children_Comments
 
         dict_to_return['data'] += comments_without_children
         dict_to_return['data'] += comments_posts
 
-        children = asyncio.run(self.get_children(comments_with_children))
-        print(len(children))
-        html_children_comments_list = []
-        for each in children:
-            soup = BeautifulSoup(each['html comments'], 'lxml')
-            each_list = [each for each in soup.findAll('div', class_='comment')]
-            html_children_comments_list.extend(each_list)
+
+
         return dict_to_return
 
+    @staticmethod
+    def convert_html_comment_to_Comment(html_comment: str):
+        """
+        Converts prettified by bs html comment to a Comment object
+        """
+
+        soup = BeautifulSoup(html_comment, 'lxml')
+        # id
+        com_id = int(soup.find('div', class_='comment').get('data-id'))
+
+        # parent_id
+        data_meta = soup.find('div', class_='comment').get('data-meta').split(';')
+        parent_id = int(data_meta[0].split('=')[1])
+
+        # html
+        # If comment has children, they could appear in the comment's html. So lets delete the children from there
+        for div in soup.findAll('div', class_='comment__children'):
+            div.extract()
+
+        # Save html without children
+        html = soup.prettify()
+
+        parsed_comment = {'id': com_id,
+                          'parent_id': parent_id,
+                          'html': html,
+                          'is_hidden': None,
+                          'is_hidden_children': None
+                          }
+        return Comment(parsed_comment)
 
 if __name__ == '__main__':
     #a = StoryCommentsParser(story_id=10085566)  # https://pikabu.ru/story/biznes_ideya_10085566#comments 1900 comments
     a = StoryCommentsParser(story_id=10161553) #492 comments
     #a = StoryCommentsParser(story_id=5_555_555) #10 comments
     # a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
+
+    #a = StoryCommentsParser(story_id=10182975) #https://pikabu.ru/story/otzyiv_o_bmw_x6_10182975
+
+
