@@ -9,96 +9,23 @@ from bs4 import BeautifulSoup
 
 PIKABU_DB_LIMIT = 300
 
+TIME = 0
 
-class Comment:
-    def __init__(self, parsed_comment: dict):
-        # Parsed info
-        self.id: int = parsed_comment['id']
-        self.parent_id: int = parsed_comment['parent_id']
-        self.raw_html: str = parsed_comment['html']
 
-        # no idea what is_hidden and is_hidden_children serve for
-        self.is_hidden: bool = parsed_comment['is_hidden']
-        self.is_hidden_children: bool = parsed_comment['is_hidden_children']
+def tick(func):
+    def wrapper(*args, **kwargs):
+        start = time.time()
+        result = func(*args, **kwargs)
+        end = time.time()
+        it_took = end - start
+        print(f"{func.__name__} took", it_took)
 
-        # Info from raw_html
-        # Some comments could be written as a new story (a post)
-        # Check if the comment is a post. In such case comment has the post's url and id.
-        # Otherwise, url = '', id = '0'
-        self.post_url_if_comment_is_post: str = self.is_post()
-        if self.post_url_if_comment_is_post:
-            self.post_id_if_comment_is_post: str = self.post_url_if_comment_is_post[
-                                                   self.post_url_if_comment_is_post.rfind("_") + 1:]
-        else:
-            self.post_id_if_comment_is_post = 0
+        global TIME
+        TIME += it_took
 
-        self.metadata = self.get_data_meta_from_raw_html()
+        return result
 
-    def is_post(self) -> str:
-        """
-        Checks if comments is a post by its html.
-        :return: False if it's not a post, story id if a post.
-        """
-        if '<div class="comment comment_comstory"' in self.raw_html:
-            post_url_start_pos = self.raw_html.find('data-url=') + 10
-            post_url_end_pos = self.raw_html.find('data-story-subs-code') - 2
-            post_url = self.raw_html[post_url_start_pos:post_url_end_pos]
-            return post_url
-        return ''
-
-    def has_children(self) -> bool:
-        """
-        Checks if comment has children by its html
-        :return: True or False
-        """
-        return True if 'comment-toggle-children' in self.raw_html else False
-
-    def get_data_meta_from_raw_html(self):
-        """
-        Gets all data_meta from the html.
-        Html Example:
-        <div class="comment"  id="comment_271331177" data-id="271331177" data-author-id="2927026"
-        data-author-avatar="https://cs.pikabu.ru/images/def_avatar/def_avatar_80.png"
-        data-meta="pid=0;aid=2927026;sid=10167269;said=6487807;d=2023-04-22T08:11:16+03:00;de=0;ic=0;r=6;av=6,0"
-        data-story-subs-code="0" data-indent="0">
-
-        data-meta explication:
-        pid=0;                             - 0 - 0 if root comment, 1 if has parent
-        aid=1381602;                       - id of the author of the comment
-        sid=10085566;                      - id of the story where the comment was publishes
-        said=4874925;                      - id of the author of the story where the comment was publishes
-        d=2023-03-28T17:41:30+03:00;       - date
-        de=0;                              - 0 if not deleted, 1 if deleted
-        ic=0;                              - No idea :(
-        r=1294;                            - total rairing of the comment
-        av=1367,73;                        - votes for + / votes for -
-        hc                                 - head comment may be? no idea :(
-        avh=-20282962854:-20282963014      - no idea :(
-
-        av in data_meta dict is divided to av+ and av- (votes in favor, votes against)
-
-        :return: Data-meta dict
-        """
-        start_pos = self.raw_html.find('pid=')
-        data_meta = self.raw_html[start_pos:].split(' ')[0][:-1]
-        data_meta = data_meta.split(';')
-
-        # delete hc and/or avh from data meta
-        data_meta = [each for each in data_meta if not (each.startswith('hc') or each.startswith('avh'))]
-
-        # make a dict
-        data_meta_dict = {each.split('=')[0]: each.split('=')[1] for each in data_meta[:-1]}
-
-        # Divide av to av+ and av-
-        try:
-            data_meta_dict['av+'] = data_meta[-1].split('=')[1].split(',')[0]
-            data_meta_dict['av-'] = data_meta[-1].split('=')[1].split(',')[1]
-        except Exception:
-            data_meta_dict['r'] = None
-            data_meta_dict['av+'] = None
-            data_meta_dict['av-'] = None
-
-        return data_meta_dict
+    return wrapper
 
 
 class StoryCommentsParser:
@@ -108,12 +35,122 @@ class StoryCommentsParser:
 
     def __init__(self, story_id):
         self.story_id = story_id
-        self.comments = self.proceed_get_story_comments_request()['data']
+        self.comments = self.proceed_get_story_comments_request()
 
         print(f'We got {len(self.comments)} comments in story No {self.story_id}')
 
-        ids = [each.id for each in self.comments]
-        print('Ids: ', *ids)
+    def proceed_get_story_comments_request(self):
+        """
+        The main method, that manages comments parsing
+        :return: set of Comment objects
+
+        """
+        all_comments = []
+
+        # Get all the root comments from the post
+        root_comments = self.get_root_comments()
+        root_cmnts_with_children, root_cmnts_without_children, comments_posts = self.divide_by_three_groups(
+            root_comments)
+
+        # Parse comments_posts
+        if False:
+            deep_comments = []
+            for each_post in comments_posts:
+                deep_comments.extend(StoryCommentsParser(each_post.id_post_comment).comments)
+            all_comments.extend(deep_comments)
+
+        # Get children
+        children = asyncio.run(self.get_children(root_cmnts_with_children))
+
+        all_comments.extend(root_comments)
+        all_comments.extend(children)
+
+        return all_comments
+
+    def get_root_comments(self) -> list:
+        """
+        Gets all the root comments from the post. Completely ignores child comments.
+        :return: a list of Comment objects
+        """
+        root_comments_list = []
+
+        # First request goes without additional parameter "start_comment_id"
+        comment_id_to_start_searching = ''
+        number_of_comments_in_response = PIKABU_DB_LIMIT
+
+        # Keep making requests while we get 300 comments by one request
+        while number_of_comments_in_response == PIKABU_DB_LIMIT:
+            # Make a request
+            result = asyncio.run(self.make_request(action='get_story_comments',
+                                                   start_comment_id=comment_id_to_start_searching))
+            total_number_of_comments = result['total_number_of_comments']
+
+            # Quit if post has no comments
+            if total_number_of_comments == 0:
+                return root_comments_list
+
+            # Convert each root comment html to Comment class object
+            parsed_comments = [Comment(each['html']) for each in result['list_of_comments']]
+            root_comments_list.extend(parsed_comments)
+
+            # Quit if post has few comments, and we got them all by one request
+            if total_number_of_comments == len(root_comments_list):
+                return root_comments_list
+
+            # The id of the last root comment in the list
+            comment_id_to_start_searching = parsed_comments[-1].id
+            number_of_comments_in_response = len(root_comments_list)
+
+        return root_comments_list
+
+    @staticmethod
+    def divide_by_three_groups(root_comments: list):
+        """
+        Divides all root comments by three groups:
+            - comments with children
+            - comments without children
+            - comments - posts
+        :param root_comments: List of Comment objects (root comments)
+        :return: Three lists
+        """
+        comments_posts = [comment for comment in root_comments if comment.id_post_comment]
+        root_cmnts_with_children = [comment for comment in root_comments if comment.has_children]
+        root_cmnts_without_children = [comment for comment in root_comments
+                                       if not comment.has_children and comment not in comments_posts]
+        return root_cmnts_with_children, root_cmnts_without_children, comments_posts
+
+    async def get_children(self, root_comments):
+        # todo fix the docstring
+        """
+        Gets all the child comments from the root comments list (Comment object)
+        Logic:
+        The response is limited by 300 comments.
+        It's ok if the 'get_comments_subtree' request returns less than 300 comments.
+        If the request returns 300 comments, we make the other request 'get_story_comments' with
+        start_comment_id = root comment id. It returns all his children with indent = 1 ????????????????????????
+        :param root_comments:
+        :return: list of child comments
+        """
+        children_to_return = []
+
+        tasks = [self.make_request(action='get_comments_subtree', id=comment.id) for comment in root_comments]
+        # child_comments is a list of huge htmls. Each html contains a comment tree for each root comment.
+        child_comments = await asyncio.gather(*tasks)
+
+        for each in child_comments:
+            one_root_comment_children = BeautifulSoup(each, 'lxml').findAll(class_='comment')
+            if len(one_root_comment_children) == 300:
+                self.invent_a_function()
+                print('Fuck! There were more than 300 children')
+                # todo here i should create a function to get more than 300 children
+            else:
+                children_objects = [Comment(comment.prettify()) for comment in one_root_comment_children]
+                children_to_return.extend(children_objects)
+
+        return children_to_return
+
+    def invent_a_function(self):
+        pass
 
     @staticmethod
     def set_anti_ddos_headers():
@@ -123,28 +160,7 @@ class StoryCommentsParser:
                            ]
         return {'User-Agent': random.choice(user_agent_list)}
 
-    async def get_children(self, root_comments):
-        """
-        Gets all the child comments from the root comments list (Comment object)
-        :param root_comments:
-        :return: a dict with an error code (0 if all good), some message if needed and a list of comments
-        """
-        dict_to_return = {'error_code': 0,
-                          'message': '',
-                          'data': []
-                          }
-        tasks = [self.make_php_request(action='get_comments_subtree', id=comment.id) for comment in root_comments]
-
-        start = time.time()
-        child_comments = await asyncio.gather(*tasks)
-        # Todo if make_php_request returns more than 300 comments start another parsing
-
-        print(time.time() - start)
-
-        # make a request trying to get 300 comments.
-        return child_comments
-
-    async def make_php_request(self, action, **kwargs):
+    async def make_request(self, action, **kwargs):
         php_request = 'https://pikabu.ru/ajax/comments_actions.php'
         req_params = {'action': action}
 
@@ -172,7 +188,7 @@ class StoryCommentsParser:
 
         data_to_return = {}
         if action == 'get_comments_subtree':
-            data_to_return = {'html comments': result_in_json['data']['html']}
+            data_to_return = result_in_json['data']['html']
 
         elif action == 'get_story_comments':
             data_to_return = {'total_number_of_comments': result_in_json['data']['total'],
@@ -180,121 +196,140 @@ class StoryCommentsParser:
                               }
         return data_to_return
 
-    def get_root_comments(self) -> dict:
+
+@tick
+class Comment:
+    """
+    Describes a comment. Contains all the useful info of the comment.
+    To create takes html only, str format.
+    """
+
+    def __init__(self, parsed_comment: str):
+        self.soup = BeautifulSoup(parsed_comment, 'lxml')
+
+        self.metadata: dict = self._get_data_meta_from_soup()
+
+        self.id: int = int(self.soup.find('div', class_='comment').get('data-id'))
+        self.parent_id: int = self.metadata['pid']
+        self.has_children = self._has_children()
+        self.raw_html: str = self.soup.prettify()
+
+        # Check if the comment is a post. In such case comment has the post url and id.
+        # Otherwise, url = '', id = 0
+        self.url_post_comment: str = self._is_post()
+        self.id_post_comment: int = self._get_id_post_comment()
+
+        self._delete_useless()
+
+    def _get_data_meta_from_soup(self) -> dict:
         """
-        Gets all the root comments from the post. Completely ignores indented comments.
-        :return: a dict with an error code (0 if all good), some message if needed and a list of comments (sorted
-        as they go on the website).
-        {
-            'error_code': 0,
-            'message': '',
-            'data': list of comments,
-        }
+        Gets all data_meta from the html.
+        Html Example:
+        <div class="comment"  id="comment_271331177" data-id="271331177" data-author-id="2927026"
+        data-author-avatar="https://cs.pikabu.ru/images/def_avatar/def_avatar_80.png"
+        data-meta="pid=0;aid=2927026;sid=10167269;said=6487807;d=2023-04-22T08:11:16+03:00;de=0;ic=0;r=6;av=6,0"
+        data-story-subs-code="0" data-indent="0">
+
+        data-meta explication:
+        pid=0;                             - 0 if root comment, parent_id if has parent
+        aid=1381602;                       - id of the author of the comment
+        sid=10085566;                      - id of the story where the comment was publishes
+        said=4874925;                      - id of the author of the story where the comment was publishes
+        d=2023-03-28T17:41:30+03:00;       - date
+        de=0;                              - 0 if not deleted, 1 if deleted
+        ic=0;                              - No idea :(
+        r=1294;                            - total rairing of the comment
+        av=1367,73;                        - votes for + / votes for -
+        hc                                 - head comment may be? no idea :(
+        avh=-20282962854:-20282963014      - no idea :(
+
+        av in data_meta dict is divided to av+ and av- (votes in favor, votes against)
+
+        :return: data_meta dict
         """
-        dict_to_return = {'error_code': 0,
-                          'message': '',
-                          'data': []
-                          }
-        # First request without conditions
-        comment_id_to_start_searching = ''
-        number_of_comments_in_response = PIKABU_DB_LIMIT
+        # Raw data-meta is a string 'pid=0;aid=3296271;sid=10085566;said=4874925;...'
+        data_meta: str = self.soup.find('div', class_='comment').get('data-meta')
+        data_meta: list = data_meta.split(';')
 
-        while number_of_comments_in_response == PIKABU_DB_LIMIT:
-            # Make a request
-            result = asyncio.run(self.make_php_request(action='get_story_comments',
-                                                       start_comment_id=comment_id_to_start_searching))
-            total_number_of_comments = result['total_number_of_comments']
+        data_meta: dict = {data.split('=')[0]: data.split('=')[1] for data in data_meta if '=' in data}
 
-            # Quit if post has no comments
-            if total_number_of_comments == 0:
-                dict_to_return['message'] = 'There are no comments in the post'
-                return dict_to_return
+        # Make rating data look good
+        try:
+            vote_up, vote_down = data_meta['av'].split(',')
+            data_meta.pop('av')
+            data_meta['av+'] = vote_up
+            data_meta['av-'] = vote_down
+        except KeyError:
+            data_meta['r'] = None
+            data_meta['av+'] = None
+            data_meta['av-'] = None
 
-            list_of_comments = [Comment(each) for each in result['list_of_comments']]
-            # result['list_of_comments']
+        # Convert all values to int format if possible
+        for key, value in data_meta.items():
+            try:
+                data_meta[key] = int(value)
+            except (ValueError, TypeError):
+                pass
 
-            dict_to_return['data'].extend(list_of_comments)
+        return data_meta
 
-            # Quit if post has few comments, and we got them all by one request
-            if total_number_of_comments == len(list_of_comments):
-                dict_to_return['message'] = 'The post was small and had a couple of root comments only'
-                return dict_to_return
-
-            # The id of the last root comment in the list
-            comment_id_to_start_searching = dict_to_return['data'][-1].id
-            number_of_comments_in_response = len(list_of_comments)
-
-        dict_to_return['message'] = f"We have got {len(dict_to_return['data'])} root comments"
-        return dict_to_return
-
-    def proceed_get_story_comments_request(self):
-        dict_to_return = {'error_code': 0,
-                          'message': '',
-                          'data': []
-                          }
-        # Get all the root comments from the post
-        root_comments = self.get_root_comments()['data']
-
-        comments_posts = [root_comment for root_comment in root_comments if root_comment.is_post()]
-        comments_with_children = [root_comment for root_comment in root_comments if root_comment.has_children()]
-        comments_without_children = [root_comment for root_comment in root_comments
-                                     if not root_comment.has_children() and root_comment not in comments_posts]
-
-        children = asyncio.run(self.get_children(comments_with_children))
-        html_children_comments_list = []
-        for big_html_of_children in children:
-            soup = BeautifulSoup(big_html_of_children['html comments'], 'lxml')
-            each_comment_html_list = [each.prettify() for each in soup.findAll('div', class_='comment')]
-            html_children_comments_list.extend(each_comment_html_list)
-
-        list_of_children_Comments = [self.convert_html_comment_to_Comment(each) for each in html_children_comments_list]
-
-        dict_to_return['data'] += comments_with_children
-        dict_to_return['data'] += list_of_children_Comments
-
-        dict_to_return['data'] += comments_without_children
-        dict_to_return['data'] += comments_posts
-
-
-
-        return dict_to_return
-
-    @staticmethod
-    def convert_html_comment_to_Comment(html_comment: str):
+    def _is_post(self) -> str:
         """
-        Converts prettified by bs html comment to a Comment object
+        Checks if comments is a post by its html.
+        :return: post-url if a post or '' if not a post
         """
+        post = self.soup.find('div', class_='comment_comstory')
+        return post.get('data-url') if post else ''
 
-        soup = BeautifulSoup(html_comment, 'lxml')
-        # id
-        com_id = int(soup.find('div', class_='comment').get('data-id'))
+    def _has_children(self) -> bool:
+        """
+        Checks if comment has children by its html
+        :return: True or False
+        """
+        children = self.soup.find('div', class_='comment-toggle-children')
+        return True if children else False
 
-        # parent_id
-        data_meta = soup.find('div', class_='comment').get('data-meta').split(';')
-        parent_id = int(data_meta[0].split('=')[1])
+    def _get_id_post_comment(self) -> int:
+        """
+        Gets post_id of the post if the comment is a post
+        """
+        if self.url_post_comment:
+            id_post = int(self.url_post_comment[self.url_post_comment.rfind('_') + 1:])
+        else:
+            id_post = 0
+        return id_post
 
-        # html
-        # If comment has children, they could appear in the comment's html. So lets delete the children from there
-        for div in soup.findAll('div', class_='comment__children'):
-            div.extract()
+    def _delete_useless(self):
+        """
+        Deletes useless information to save memory
+        """
+        del self.soup
 
-        # Save html without children
-        html = soup.prettify()
-
-        parsed_comment = {'id': com_id,
-                          'parent_id': parent_id,
-                          'html': html,
-                          'is_hidden': None,
-                          'is_hidden_children': None
-                          }
-        return Comment(parsed_comment)
 
 if __name__ == '__main__':
-    #a = StoryCommentsParser(story_id=10085566)  # https://pikabu.ru/story/biznes_ideya_10085566#comments 1900 comments
-    a = StoryCommentsParser(story_id=10161553) #492 comments
-    #a = StoryCommentsParser(story_id=5_555_555) #10 comments
+    start = time.time()
+    # a = StoryCommentsParser(story_id=10085566)  # https://pikabu.ru/story/biznes_ideya_10085566#comments 1900 comments
+    a = StoryCommentsParser(story_id=10161553)  # 492 comments
+    # a = StoryCommentsParser(story_id=5_555_555) #10 comments
     # a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
 
-    #a = StoryCommentsParser(story_id=10182975) #https://pikabu.ru/story/otzyiv_o_bmw_x6_10182975
+    print(time.time() - start)
+    # a = StoryCommentsParser(story_id=10182975) #https://pikabu.ru/story/otzyiv_o_bmw_x6_10182975
 
+    print(f'Total = {TIME}')
+
+    # 13.5
+    # 13.1
+    # 13.5
+    # 13.45
+    # 13.29
+    # 13.25
+
+    # 14.23
+    # 14.7
+    # 14.3
+    # 14.16
+    # without prettify
+    # 13.06
+    # 13.01
 
