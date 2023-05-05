@@ -14,17 +14,14 @@ TIME = 0
 
 def tick(func):
     def wrapper(*args, **kwargs):
-        start = time.time()
+        go = time.time()
         result = func(*args, **kwargs)
-        end = time.time()
-        it_took = end - start
+        stop = time.time()
+        it_took = stop - go
         print(f"{func.__name__} took", it_took)
-
         global TIME
         TIME += it_took
-
         return result
-
     return wrapper
 
 
@@ -197,22 +194,30 @@ class StoryCommentsParser:
         return data_to_return
 
 
-@tick
 class Comment:
     """
     Describes a comment. Contains all the useful info of the comment.
     To create takes html only, str format.
+    Comment object has:
+        - Author name and id
+        - Comment content HTML
+        - Comment metadata
+        - Comment id, and it's parent ids
+        - If has children
+        - URL and id of a post if the comment is the post.
+
     """
 
     def __init__(self, parsed_comment: str):
         self.soup = BeautifulSoup(parsed_comment, 'lxml')
+        self.content_tag_html = self.soup.find(class_='comment__content').prettify()
+        self._clean_soup()
 
         self.metadata: dict = self._get_data_meta_from_soup()
-
+        self.author: dict = self._get_author()
         self.id: int = int(self.soup.find('div', class_='comment').get('data-id'))
         self.parent_id: int = self.metadata['pid']
         self.has_children = self._has_children()
-        self.raw_html: str = self.soup.prettify()
 
         # Check if the comment is a post. In such case comment has the post url and id.
         # Otherwise, url = '', id = 0
@@ -220,6 +225,22 @@ class Comment:
         self.id_post_comment: int = self._get_id_post_comment()
 
         self._delete_useless()
+
+    def _clean_soup(self):
+        """
+        Cleans all unnecessary text from html.
+        Deletes tags:
+            comment__children
+            comment__tools
+            comment__controls
+            comment__content
+        """
+        classes_to_delete = ('comment__children', 'comment__tools',
+                             'comment__controls', 'comment__content')
+        for class_ in classes_to_delete:
+            tag_to_delete = self.soup.find(class_=class_)
+            if tag_to_delete:
+                tag_to_delete.extract()
 
     def _get_data_meta_from_soup(self) -> dict:
         """
@@ -273,6 +294,15 @@ class Comment:
 
         return data_meta
 
+    def _get_author(self) -> dict:
+        """
+        Gets the info about author
+        Returns a dict with name and id
+        """
+        user_tag = self.soup.find(class_='comment__user')
+        return {'name': user_tag.get('data-name'),
+                'id': int(user_tag.get('data-id'))}
+
     def _is_post(self) -> str:
         """
         Checks if comments is a post by its html.
@@ -302,34 +332,16 @@ class Comment:
     def _delete_useless(self):
         """
         Deletes useless information to save memory
+            - self soup
         """
         del self.soup
 
 
 if __name__ == '__main__':
-    start = time.time()
     # a = StoryCommentsParser(story_id=10085566)  # https://pikabu.ru/story/biznes_ideya_10085566#comments 1900 comments
     a = StoryCommentsParser(story_id=10161553)  # 492 comments
     # a = StoryCommentsParser(story_id=5_555_555) #10 comments
     # a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
-
-    print(time.time() - start)
     # a = StoryCommentsParser(story_id=10182975) #https://pikabu.ru/story/otzyiv_o_bmw_x6_10182975
 
-    print(f'Total = {TIME}')
-
-    # 13.5
-    # 13.1
-    # 13.5
-    # 13.45
-    # 13.29
-    # 13.25
-
-    # 14.23
-    # 14.7
-    # 14.3
-    # 14.16
-    # without prettify
-    # 13.06
-    # 13.01
 
