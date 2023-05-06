@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 PIKABU_DB_LIMIT = 300
 
 TIME = 0
+COUNT = 0
 
 
 def tick(func):
@@ -19,8 +20,9 @@ def tick(func):
         stop = time.time()
         it_took = stop - go
         print(f"{func.__name__} took", it_took)
-        global TIME
+        global TIME, COUNT
         TIME += it_took
+        COUNT += 1
         return result
     return wrapper
 
@@ -117,14 +119,12 @@ class StoryCommentsParser:
         return root_cmnts_with_children, root_cmnts_without_children, comments_posts
 
     async def get_children(self, root_comments):
-        # todo fix the docstring
         """
         Gets all the child comments from the root comments list (Comment object)
         Logic:
         The response is limited by 300 comments.
         It's ok if the 'get_comments_subtree' request returns less than 300 comments.
-        If the request returns 300 comments, we make the other request 'get_story_comments' with
-        start_comment_id = root comment id. It returns all his children with indent = 1 ????????????????????????
+        If the request returns 300 comments, use another function to get more than 300 comments.
         :param root_comments:
         :return: list of child comments
         """
@@ -137,16 +137,15 @@ class StoryCommentsParser:
         for each in child_comments:
             one_root_comment_children = BeautifulSoup(each, 'lxml').findAll(class_='comment')
             if len(one_root_comment_children) == 300:
-                self.invent_a_function()
-                print('Fuck! There were more than 300 children')
-                # todo here i should create a function to get more than 300 children
+                self.parse_huge_subtrees()
+                print('There were more than 300 children')
             else:
                 children_objects = [Comment(comment.prettify()) for comment in one_root_comment_children]
                 children_to_return.extend(children_objects)
 
         return children_to_return
 
-    def invent_a_function(self):
+    def parse_huge_subtrees(self):
         pass
 
     @staticmethod
@@ -343,5 +342,3 @@ if __name__ == '__main__':
     # a = StoryCommentsParser(story_id=5_555_555) #10 comments
     # a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
     # a = StoryCommentsParser(story_id=10182975) #https://pikabu.ru/story/otzyiv_o_bmw_x6_10182975
-
-
