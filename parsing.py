@@ -30,43 +30,29 @@ def tick(func):
 class StoryCommentsParser:
     """
     It's a class that gets all the comments from a story from pikabu.ru by the story's id.
+    If go_deep starts comments-post parsing
     """
 
-    def __init__(self, story_id):
+    def __init__(self, story_id, go_deep=False):
         self.story_id = story_id
-        self.comments = self.proceed_get_story_comments_request()
 
+        # Get root comments
+        self.root_comments, self.expected_number_of_comments = self.get_root_comments()
+        self.rc_with_children, self.rc_without_children, self.posts = self.divide_by_three_groups(self.root_comments)
+
+        # Get children comments
+        self.children = asyncio.run(self.get_children(self.rc_with_children))
+
+        # Get deep comments
+        self.deep_comments = self.get_deep_comments() if go_deep else []
+
+        # Put all together
+        self.comments = self.all_together()
         print(f'We got {len(self.comments)} comments in story No {self.story_id}')
+        print(f'We expected {self.expected_number_of_comments} comments')
+        print(1)
 
-    def proceed_get_story_comments_request(self):
-        """
-        The main method, that manages comments parsing
-        :return: set of Comment objects
-
-        """
-        all_comments = []
-
-        # Get all the root comments from the post
-        root_comments = self.get_root_comments()
-        root_cmnts_with_children, root_cmnts_without_children, comments_posts = self.divide_by_three_groups(
-            root_comments)
-
-        # Parse comments_posts
-        if False:
-            deep_comments = []
-            for each_post in comments_posts:
-                deep_comments.extend(StoryCommentsParser(each_post.id_post_comment).comments)
-            all_comments.extend(deep_comments)
-
-        # Get children
-        children = asyncio.run(self.get_children(root_cmnts_with_children))
-
-        all_comments.extend(root_comments)
-        all_comments.extend(children)
-
-        return all_comments
-
-    def get_root_comments(self) -> list:
+    def get_root_comments(self):
         """
         Gets all the root comments from the post. Completely ignores child comments.
         :return: a list of Comment objects
@@ -100,7 +86,7 @@ class StoryCommentsParser:
             comment_id_to_start_searching = parsed_comments[-1].id
             number_of_comments_in_response = len(root_comments_list)
 
-        return root_comments_list
+        return root_comments_list, total_number_of_comments
 
     @staticmethod
     def divide_by_three_groups(root_comments: list):
@@ -117,6 +103,13 @@ class StoryCommentsParser:
         root_cmnts_without_children = [comment for comment in root_comments
                                        if not comment.has_children and comment not in comments_posts]
         return root_cmnts_with_children, root_cmnts_without_children, comments_posts
+
+    def get_deep_comments(self):
+        # todo docstring
+        deep_comments = []
+        for each_post in self.posts:
+            deep_comments.extend(StoryCommentsParser(each_post.id_post_comment).comments)
+        return deep_comments
 
     async def get_children(self, root_comments):
         """
@@ -147,6 +140,13 @@ class StoryCommentsParser:
 
     def parse_huge_subtrees(self):
         pass
+
+    def all_together(self):
+        # todo docstring
+        all_comments = self.root_comments + self.children + self.deep_comments
+        del self.root_comments, self.children, self.deep_comments
+        del self.posts, self.rc_without_children, self.rc_with_children
+        return all_comments
 
     @staticmethod
     def set_anti_ddos_headers():
@@ -209,6 +209,10 @@ class Comment:
 
     def __init__(self, parsed_comment: str):
         self.soup = BeautifulSoup(parsed_comment, 'lxml')
+
+        # todo delete raw_html. Debug use only
+        self.raw_html = self.soup.prettify()
+
         self.content_tag_html = self.soup.find(class_='comment__content').prettify()
         self._clean_soup()
 
@@ -337,8 +341,11 @@ class Comment:
 
 
 if __name__ == '__main__':
+    start = time.time()
     # a = StoryCommentsParser(story_id=10085566)  # https://pikabu.ru/story/biznes_ideya_10085566#comments 1900 comments
     a = StoryCommentsParser(story_id=10161553)  # 492 comments
     # a = StoryCommentsParser(story_id=5_555_555) #10 comments
-    # a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
+    #a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
     # a = StoryCommentsParser(story_id=10182975) #https://pikabu.ru/story/otzyiv_o_bmw_x6_10182975
+
+    print(time.time() - start)
