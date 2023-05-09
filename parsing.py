@@ -26,24 +26,20 @@ def tick(func):
         return result
     return wrapper
 
-
+@tick
 class StoryCommentsParser:
     """
     It's a class that gets all the comments from a story from pikabu.ru by the story's id.
     If go_deep starts comments-post parsing
     """
+    user_agent_list = ['Chrome/108.0.0.0', 'Mozilla/5.0', 'Dalvik/2.1.0',]
 
     def __init__(self, story_id, go_deep=False):
-        start = time.time()
         self.story_id = story_id
         self.total, self.min_id, self.tree_structure = self.the_first_request()
-        print(time.time() - start, 'Took for first request')
-
-        self.comments_ids = self.get_all_ids_comments()
-        self.groups_to_parse = self.group_comments_for_async_request()
         self.comments = asyncio.run(self.async_get_comments())
 
-        print(f'{self.comments_ids=} \n{self.total=}')
+        print(f'{self.total=}, We got {len(self.comments)}')
 
     def the_first_request(self) -> (int, int, list):
         """
@@ -56,6 +52,39 @@ class StoryCommentsParser:
         min_id = req['snapshot']['min']
         tree = req['snapshot']['tree']
         return total, min_id, tree
+
+    async def async_get_comments(self):
+        # Get a list of dicts. Each dict contains keys: result, message, message code, data.
+        # data contains a dict with keys id and html
+        tasks = [self.make_request(action='get_comments_by_ids',
+                                   ids=','.join(group)) for group in self.group_comments_for_async_request()]
+        responses = await asyncio.gather(*tasks)
+
+
+        start = time.time()
+        # Convert all htmls to Comment objects from responses
+        list_of_comment_objects = []
+        for response in responses:
+
+            response = response['data']
+
+            for comment in response:
+                comment = comment['html']
+                list_of_comment_objects.append(Comment(comment))
+
+        print(f'It took {time.time() - start} sec to convert')
+        return list_of_comment_objects
+
+    def group_comments_for_async_request(self):
+        i = 0
+        comments_ids = self.get_all_ids_comments()
+        groups = []
+        while i < len(comments_ids):
+            group = comments_ids[i:i+300]
+            group = [str(com_id) for com_id in group]
+            groups.append(group)
+            i += 300
+        return groups
 
     def get_all_ids_comments(self) -> list:
         """
@@ -78,39 +107,6 @@ class StoryCommentsParser:
 
         return sorted(list_of_all_comment_ids_in_the_post)
 
-    def group_comments_for_async_request(self):
-        i = 0
-        groups = []
-        while i < len(self.comments_ids):
-            group = self.comments_ids[i:i+300]
-            group = [str(com_id) for com_id in group]
-            groups.append(group)
-            i += 300
-        return groups
-
-    async def async_get_comments(self):
-        start = time.time()
-        # Get a list of dicts. Each dict contains keys: result, message, message code, data.
-        # data contains a dict with keys id and html
-        tasks = [self.make_request(action='get_comments_by_ids',
-                                   ids=','.join(group)) for group in self.group_comments_for_async_request()]
-
-        responses = await asyncio.gather(*tasks)
-        print(time.time() - start, 'Took for requests')
-
-        # Convert all htmls to Comment objects from responses
-        start = time.time()
-        list_of_comment_objects = []
-        for response in responses:
-
-            response = response['data']
-
-            for comment in response:
-                comment = comment['html']
-                list_of_comment_objects.append(Comment(comment))
-        print(time.time() - start, 'Took for create Comment objects')
-        return list_of_comment_objects
-
     def get_deep_comments(self):
         # todo docstring
         deep_comments = []
@@ -127,7 +123,7 @@ class StoryCommentsParser:
         return {'User-Agent': random.choice(user_agent_list)}
 
     async def make_request(self, **kwargs):
-        php_request = 'https://pikabu.ru/ajax/comments_actions.php'
+        url = 'https://pikabu.ru/ajax/comments_actions.php'
         req_params = {'action': kwargs['action']}
 
         if kwargs['action'] == 'get_story_comments':
@@ -135,20 +131,20 @@ class StoryCommentsParser:
                                'last_comment_id': kwargs['last_comment_id'] if kwargs.get('last_comment_id') else '',
                                'start_comment_id': kwargs['start_comment_id'] if kwargs.get('start_comment_id') else '',
                                })
-
         elif kwargs['action'] == 'get_comments_by_ids':
             req_params.update({'ids': kwargs['ids']})
-
         elif kwargs['action'] == 'get_comments_subtree':
             req_params.update({'id': kwargs['id'],
                                })
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(php_request, data=req_params, params={'g': 'goog'},
-                                    headers=self.set_anti_ddos_headers()) as response:
+            async with session.post(url,
+                                    data=req_params,
+                                    params={'g': 'goog'},
+                                    headers={'User-Agent': random.choice(self.user_agent_list)},
+                                    ) as response:
                 result = await response.text()
         result_in_json = json.loads(result)
-
         return result_in_json
 
 
@@ -161,7 +157,6 @@ class Comment:
         - Comment content HTML
         - Comment metadata
         - Comment id, and it's parent ids
-        - If has children
         - URL and id of a post if the comment is the post.
 
     """
@@ -170,7 +165,7 @@ class Comment:
         self.soup = BeautifulSoup(parsed_comment, 'lxml')
 
         # todo delete raw_html. Debug use only, critically slows down tho program
-        self.raw_html = self.soup.prettify()
+        # self.raw_html = self.soup.prettify()
 
         self.content_tag_html = self.soup.find(class_='comment__content').prettify()
         self._clean_soup()
@@ -291,9 +286,10 @@ class Comment:
 
 
 if __name__ == '__main__':
-    a = StoryCommentsParser(story_id=10085566)  # https://pikabu.ru/story/biznes_ideya_10085566#comments 1900 comments
-    # a = StoryCommentsParser(story_id=10161553)  # 492 comments
-    # a = StoryCommentsParser(story_id=5_555_555) #10 comments
-    # a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
+    #a = StoryCommentsParser(story_id=10085566)  # https://pikabu.ru/story/biznes_ideya_10085566#comments 1900 comments
+    #a = StoryCommentsParser(story_id=10161553)  # 492 comments
+    #a = StoryCommentsParser(story_id=5_555_555) #10 comments
+    a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
     # a = StoryCommentsParser(story_id=10182975) #https://pikabu.ru/story/otzyiv_o_bmw_x6_10182975
 
+    #a = StoryCommentsParser(story_id=10219957) # a lot of posts
