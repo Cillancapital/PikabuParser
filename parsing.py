@@ -32,12 +32,18 @@ class StoryCommentsParser:
     It's a class that gets all the comments from a story from pikabu.ru by the story's id.
     If go_deep starts comments-post parsing
     """
-    user_agent_list = ['Chrome/108.0.0.0', 'Mozilla/5.0', 'Dalvik/2.1.0',]
+    user_agent_list = ['Chrome/108.0.0.0', 'Mozilla/5.0', 'Dalvik/2.1.0']
 
     def __init__(self, story_id, go_deep=False):
         self.story_id = story_id
         self.total, self.min_id, self.tree_structure = self.the_first_request()
-        self.comments = asyncio.run(self.async_get_comments())
+        self.comments: list = asyncio.run(self.async_get_comments())
+
+        if go_deep:
+            self.get_deep_comments()
+
+        if self.total != len(self.comments):
+            print(self.story_id)
 
         print(f'{self.total=}, We got {len(self.comments)}')
 
@@ -55,13 +61,11 @@ class StoryCommentsParser:
 
     async def async_get_comments(self):
         # Get a list of dicts. Each dict contains keys: result, message, message code, data.
-        # data contains a dict with keys id and html
+        # data contains a dict with keys: id and html
         tasks = [self.make_request(action='get_comments_by_ids',
                                    ids=','.join(group)) for group in self.group_comments_for_async_request()]
         responses = await asyncio.gather(*tasks)
 
-
-        start = time.time()
         # Convert all htmls to Comment objects from responses
         list_of_comment_objects = []
         for response in responses:
@@ -72,7 +76,6 @@ class StoryCommentsParser:
                 comment = comment['html']
                 list_of_comment_objects.append(Comment(comment))
 
-        print(f'It took {time.time() - start} sec to convert')
         return list_of_comment_objects
 
     def group_comments_for_async_request(self):
@@ -92,14 +95,23 @@ class StoryCommentsParser:
         :return: a list of comment ids
         """
         def brake_down_the_structure(lst):
-            for elem in lst:
+            """
+            Gets all the numbers from tree structure.
+            Skips the second element in lists.
+            Structure example:
+            [2564, 0, [[16208, 0, [[52051, 0, [[71927, 0, [[75123, 0]]]]]]], [34431, 0], [73023, 0], [14047, 0, [[177804, 0]]]]]
+            """
+
+            for position, elem in enumerate(lst):
+                if position == 1 and isinstance(elem, int):
+                    continue
                 if isinstance(elem, list):
                     yield from brake_down_the_structure(elem)
                 else:
                     yield elem
 
         snap = self.tree_structure
-        broken = []
+        broken = [self.min_id]
         for each in snap:
             break_one = [i + self.min_id for i in brake_down_the_structure(each) if i != 0]
             broken.extend(break_one)
@@ -109,18 +121,11 @@ class StoryCommentsParser:
 
     def get_deep_comments(self):
         # todo docstring
-        deep_comments = []
-        for each_post in self.posts:
-            deep_comments.extend(StoryCommentsParser(each_post.id_post_comment).comments)
-        return deep_comments
 
-    @staticmethod
-    def set_anti_ddos_headers():
-        user_agent_list = ['Chrome/108.0.0.0',
-                           'Mozilla/5.0',
-                           'Dalvik/2.1.0',
-                           ]
-        return {'User-Agent': random.choice(user_agent_list)}
+        comments_posts = [comment for comment in self.comments if comment.id_post_comment]
+        for each_post in comments_posts:
+            self.comments.extend(StoryCommentsParser(each_post.id_post_comment).comments)
+
 
     async def make_request(self, **kwargs):
         url = 'https://pikabu.ru/ajax/comments_actions.php'
@@ -289,7 +294,10 @@ if __name__ == '__main__':
     #a = StoryCommentsParser(story_id=10085566)  # https://pikabu.ru/story/biznes_ideya_10085566#comments 1900 comments
     #a = StoryCommentsParser(story_id=10161553)  # 492 comments
     #a = StoryCommentsParser(story_id=5_555_555) #10 comments
-    a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
     # a = StoryCommentsParser(story_id=10182975) #https://pikabu.ru/story/otzyiv_o_bmw_x6_10182975
 
-    #a = StoryCommentsParser(story_id=10219957) # a lot of posts
+    a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
+    #a = StoryCommentsParser(story_id=10208614, go_deep=True) # a lot of posts
+
+    # a = StoryCommentsParser(story_id=10216528)
+    # 10216528 #6 of 5
