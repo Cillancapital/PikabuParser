@@ -36,51 +36,60 @@ class StoryCommentsParser:
 
     def __init__(self, story_id, go_deep=False):
         self.story_id = story_id
-        self.total, self.min_id, self.tree_structure = self.the_first_request()
-        self.comments: list = asyncio.run(self.async_get_comments())
+        self.total, self.min_id, self.tree_structure = self._the_first_request()
+
+        self.comments: list = asyncio.run(self._get_all_comments())
 
         if go_deep:
-            self.get_deep_comments()
+            self._get_deep_comments()
 
-        if self.total != len(self.comments):
-            print(self.story_id)
+        if self.total == len(self.comments):
+            print(f'All good {self.total=}')
 
-        print(f'{self.total=}, We got {len(self.comments)}')
+        print(*[comment.id for comment in self.comments])
 
-    def the_first_request(self) -> (int, int, list):
+    def _the_first_request(self) -> (int, int, list):
         """
         Makes the very first request to start the parsing.
-        :return: A tuple of total amount of comments in the post, min comment id and the three structure.
+        :return: A tuple of total amount of comments in the post min comment id and the three structure.
         """
-        req = asyncio.run(self.make_request(action='get_story_comments'))
+        req = asyncio.run(self._make_request(action='get_story_comments'))
         req = req['data']
         total = req['total']
         min_id = req['snapshot']['min']
         tree = req['snapshot']['tree']
         return total, min_id, tree
 
-    async def async_get_comments(self):
+    async def _async_get_comments(self):
+        """
+        Gets a lisk of responses for get_comments_by_ids requests
+        :return: list of server responses
+        """
         # Get a list of dicts. Each dict contains keys: result, message, message code, data.
         # data contains a dict with keys: id and html
-        tasks = [self.make_request(action='get_comments_by_ids',
-                                   ids=','.join(group)) for group in self.group_comments_for_async_request()]
+        tasks = [self._make_request(action='get_comments_by_ids',
+                                    ids=','.join(group)) for group in self._group_comments_for_async_request()]
         responses = await asyncio.gather(*tasks)
+        return responses
 
-        # Convert all htmls to Comment objects from responses
+    async def _get_all_comments(self) -> list:
+        """
+        Converts htmls to Comment objects
+        :return: List of Comment objects
+        """
+        responses = await self._async_get_comments()
+
         list_of_comment_objects = []
         for response in responses:
-
             response = response['data']
-
             for comment in response:
                 comment = comment['html']
                 list_of_comment_objects.append(Comment(comment))
-
         return list_of_comment_objects
 
-    def group_comments_for_async_request(self):
+    def _group_comments_for_async_request(self):
         i = 0
-        comments_ids = self.get_all_ids_comments()
+        comments_ids = self._get_all_ids_comments()
         groups = []
         while i < len(comments_ids):
             group = comments_ids[i:i+300]
@@ -89,7 +98,7 @@ class StoryCommentsParser:
             i += 300
         return groups
 
-    def get_all_ids_comments(self) -> list:
+    def _get_all_ids_comments(self) -> list:
         """
         Gets all the ids from the tree of comments.
         :return: a list of comment ids
@@ -99,13 +108,14 @@ class StoryCommentsParser:
             Gets all the numbers from tree structure.
             Skips the second element in lists.
             Structure example:
-            [2564, 0, [[16208, 0, [[52051, 0, [[71927, 0, [[75123, 0]]]]]]], [34431, 0], [73023, 0], [14047, 0, [[177804, 0]]]]]
+            [2564, 0, [[16208, 0, [[52051, 0,
+            [[71927, 0, [[75123, 0]]]]]]], [34431, 0], [73023, 0], [14047, 0, [[177804, 0]]]]]
             """
 
             for position, elem in enumerate(lst):
                 if position == 1 and isinstance(elem, int):
                     continue
-                if isinstance(elem, list):
+                elif isinstance(elem, list):
                     yield from brake_down_the_structure(elem)
                 else:
                     yield elem
@@ -113,21 +123,22 @@ class StoryCommentsParser:
         snap = self.tree_structure
         broken = [self.min_id]
         for each in snap:
-            break_one = [i + self.min_id for i in brake_down_the_structure(each) if i != 0]
+            break_one = [i + self.min_id for i in brake_down_the_structure(each)]
             broken.extend(break_one)
-        list_of_all_comment_ids_in_the_post = list(set(broken))
-
+        list_of_all_comment_ids_in_the_post = list(broken)
         return sorted(list_of_all_comment_ids_in_the_post)
 
-    def get_deep_comments(self):
-        # todo docstring
-
+    def _get_deep_comments(self):
+        """
+        If go_deep == true
+        Parse commemts posts
+        extends self. list of comment objects
+        """
         comments_posts = [comment for comment in self.comments if comment.id_post_comment]
         for each_post in comments_posts:
             self.comments.extend(StoryCommentsParser(each_post.id_post_comment).comments)
 
-
-    async def make_request(self, **kwargs):
+    async def _make_request(self, **kwargs):
         url = 'https://pikabu.ru/ajax/comments_actions.php'
         req_params = {'action': kwargs['action']}
 
@@ -169,9 +180,6 @@ class Comment:
     def __init__(self, parsed_comment: str):
         self.soup = BeautifulSoup(parsed_comment, 'lxml')
 
-        # todo delete raw_html. Debug use only, critically slows down tho program
-        # self.raw_html = self.soup.prettify()
-
         self.content_tag_html = self.soup.find(class_='comment__content').prettify()
         self._clean_soup()
 
@@ -180,8 +188,6 @@ class Comment:
         self.id: int = int(self.soup.find('div', class_='comment').get('data-id'))
         self.parent_id: int = self.metadata['pid']
 
-        # Check if the comment is a post. In such case comment has the post url and id.
-        # Otherwise, url = '', id = 0
         self.url_post_comment: str = self._is_post()
         self.id_post_comment: int = self._get_id_post_comment()
 
@@ -220,7 +226,7 @@ class Comment:
         d=2023-03-28T17:41:30+03:00;       - date
         de=0;                              - 0 if not deleted, 1 if deleted
         ic=0;                              - No idea :(
-        r=1294;                            - total rairing of the comment
+        r=1294;                            - total rating of the comment
         av=1367,73;                        - votes for + / votes for -
         hc                                 - head comment may be? no idea :(
         avh=-20282962854:-20282963014      - no idea :(
@@ -292,11 +298,12 @@ class Comment:
 
 if __name__ == '__main__':
     #a = StoryCommentsParser(story_id=10085566)  # https://pikabu.ru/story/biznes_ideya_10085566#comments 1900 comments
-    #a = StoryCommentsParser(story_id=10161553)  # 492 comments
+    a = StoryCommentsParser(story_id=10161553)  # 492 comments
     #a = StoryCommentsParser(story_id=5_555_555) #10 comments
     # a = StoryCommentsParser(story_id=10182975) #https://pikabu.ru/story/otzyiv_o_bmw_x6_10182975
 
-    a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
+    #a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
+
     #a = StoryCommentsParser(story_id=10208614, go_deep=True) # a lot of posts
 
     # a = StoryCommentsParser(story_id=10216528)
