@@ -4,10 +4,9 @@ import time
 import aiohttp
 import random
 import json
+import threading
 
-from bs4 import BeautifulSoup
-
-PIKABU_DB_LIMIT = 300
+from comment import Comment
 
 TIME = 0
 COUNT = 0
@@ -24,34 +23,64 @@ def tick(func):
         TIME += it_took
         COUNT += 1
         return result
+
     return wrapper
 
-@tick
+
 class StoryCommentsParser:
     """
-    It's a class that gets all the comments from a story from pikabu.ru by the story's id.
-    If go_deep starts comments-post parsing
+    A class that retrieves all comments from a story on pikabu.ru based on the story's ID.
+    If `go_deep` is True, it also parses comment posts.
+
+    Attributes:
+        user_agent_list (list): A list of user agent strings.
+        story_id (int): The ID of the story being parsed.
+        total (int): The total number of comments in the post.
+        min_id (int): The minimum comment ID.
+        tree_structure (list): The tree structure of comments.
+        comments (list): A list of Comment objects representing the comments in the story.
+
+    Methods:
+        _the_first_request(): Makes the initial request, retrieves necessary information to start the parsing process.
+        _async_get_comments(): Retrieves a list of responses for the 'get_comments_by_ids' requests.
+        _convert_raw_data_to_comment_objects(raw_data): Converts HTMLs to Comment objects.
+        _group_comments_for_async_request(): Groups comment IDs for asynchronous requests.
+        _get_all_ids_comments(): Retrieves all comment IDs from the tree structure of comments.
+        _get_deep_comments(): Parses comment posts if `go_deep` is True.
+        _make_request(**kwargs): Makes an asynchronous HTTP POST request.
+
     """
     user_agent_list = ['Chrome/108.0.0.0', 'Mozilla/5.0', 'Dalvik/2.1.0']
 
     def __init__(self, story_id, go_deep=False):
+        """
+        Initializes a StoryCommentsParser object.
+
+        Args:
+            story_id (int): The ID of the story to parse.
+            go_deep (bool): Indicates whether to perform deep parsing of comment posts. Default is False.
+        """
+        # parse
         self.story_id = story_id
         self.total, self.min_id, self.tree_structure = self._the_first_request()
+        raw_data = asyncio.run(self._async_get_comments())
+        self.comments: list = self._convert_raw_data_to_comment_objects(raw_data)
 
-        self.comments: list = asyncio.run(self._get_all_comments())
-
+        # Deep parse
         if go_deep:
             self._get_deep_comments()
 
+        # Check
         if self.total == len(self.comments):
             print(f'All good {self.total=}')
-
         print(*[comment.id for comment in self.comments])
 
     def _the_first_request(self) -> (int, int, list):
         """
-        Makes the very first request to start the parsing.
-        :return: A tuple of total amount of comments in the post min comment id and the three structure.
+        Makes the very first request and retrieves the necessary information to start the parsing process.
+
+        :return: A tuple containing the total number of comments in the post,
+                 the minimum comment ID, and the comment tree structure.
         """
         req = asyncio.run(self._make_request(action='get_story_comments'))
         req = req['data']
@@ -60,10 +89,14 @@ class StoryCommentsParser:
         tree = req['snapshot']['tree']
         return total, min_id, tree
 
-    async def _async_get_comments(self):
+    async def _async_get_comments(self) -> tuple:
         """
-        Gets a lisk of responses for get_comments_by_ids requests
-        :return: list of server responses
+        Retrieves a list of responses for the 'get_comments_by_ids' requests.
+
+        :return: Tuple of dicts representing server responses. Each dict contains the following keys: 'result',
+                 'message', 'message_code', and 'data'. The 'data' key provides access to a list of dicts,
+                 where each dict contains the 'id' and 'html' keys.
+
         """
         # Get a list of dicts. Each dict contains keys: result, message, message code, data.
         # data contains a dict with keys: id and html
@@ -72,12 +105,18 @@ class StoryCommentsParser:
         responses = await asyncio.gather(*tasks)
         return responses
 
-    async def _get_all_comments(self) -> list:
+    @staticmethod
+    @tick
+    def _convert_raw_data_to_comment_objects(raw_data) -> list:
         """
-        Converts htmls to Comment objects
-        :return: List of Comment objects
+        Converts HTMLs to Comment objects.
+
+        :param raw_data: List of dicts representing server responses. Each dict contains the following keys: 'result',
+                         'message', 'message_code', and 'data'. The 'data' key provides access to a list of dicts,
+                         where each dict contains the 'id' and 'html' keys.
+        :return: List of Comment objects.
         """
-        responses = await self._async_get_comments()
+        responses: dict = raw_data
 
         list_of_comment_objects = []
         for response in responses:
@@ -87,12 +126,68 @@ class StoryCommentsParser:
                 list_of_comment_objects.append(Comment(comment))
         return list_of_comment_objects
 
-    def _group_comments_for_async_request(self):
+    @staticmethod
+    @tick
+    def _new_convert_logic(raw_data):
+        """
+        9 seconds for 4000 comments
+        """
+        def create_object(com):
+            return Comment(com)
+
+        results = []
+
+        def worker(com):
+            result = create_object(com)
+            results.append(result)
+
+        for each in raw_data:
+            each = each['data']
+
+            threads = []
+            for comment in each:
+                comment = comment['html']
+                thread = threading.Thread(target=worker, args=(comment,))
+                thread.start()
+                threads.append(thread)
+
+            for thread in threads:
+                thread.join()
+
+        return results
+
+    @staticmethod
+    async def _new_convert_logic_async(raw_data):
+        """
+        33 second for 4000 comments
+        """
+        start = time.time()
+        responses: dict = raw_data
+        comments_to_return = []
+        htmls = []
+        for response in responses:
+            response = response['data'] # response - list of comments dicts
+            htmls.extend([comment['html'] for comment in response])
+
+        loop = asyncio.get_event_loop()
+        comments = await asyncio.gather(
+            *[loop.run_in_executor(None, Comment, parsed_comment) for parsed_comment in htmls])
+        comments_to_return.extend(comments)
+        print(f'{time.time() - start} logic2 async')
+        return comments_to_return
+
+    def _group_comments_for_async_request(self) -> list:
+        """
+        Groups comment IDs for asynchronous requests.
+
+        :return: A list of lists, where each inner list represents a group of comment IDs
+                 to be included in an asynchronous request.
+        """
         i = 0
         comments_ids = self._get_all_ids_comments()
         groups = []
         while i < len(comments_ids):
-            group = comments_ids[i:i+300]
+            group = comments_ids[i:i + 300]
             group = [str(com_id) for com_id in group]
             groups.append(group)
             i += 300
@@ -100,16 +195,21 @@ class StoryCommentsParser:
 
     def _get_all_ids_comments(self) -> list:
         """
-        Gets all the ids from the tree of comments.
-        :return: a list of comment ids
+        Retrieves all comment IDs from the tree structure of comments.
+
+        :return: A sorted list of all comment IDs in the post.
         """
+
         def brake_down_the_structure(lst):
             """
-            Gets all the numbers from tree structure.
-            Skips the second element in lists.
+            Recursively extracts all numbers from the tree structure.
+            Skips the second element in each list because it's purpose is unknown.
+
             Structure example:
             [2564, 0, [[16208, 0, [[52051, 0,
             [[71927, 0, [[75123, 0]]]]]]], [34431, 0], [73023, 0], [14047, 0, [[177804, 0]]]]]
+
+            :param lst: The list representing the tree structure.
             """
 
             for position, elem in enumerate(lst):
@@ -128,17 +228,33 @@ class StoryCommentsParser:
         list_of_all_comment_ids_in_the_post = list(broken)
         return sorted(list_of_all_comment_ids_in_the_post)
 
-    def _get_deep_comments(self):
+    def _get_deep_comments(self) -> None:
         """
-        If go_deep == true
-        Parse commemts posts
-        extends self. list of comment objects
+        Parses comment posts if `go_deep` is set to `True`.
+        Extends the list of comment objects in `self`.
+
+        Note: Only comments with `id_post_comment` are considered for parsing.
         """
         comments_posts = [comment for comment in self.comments if comment.id_post_comment]
         for each_post in comments_posts:
             self.comments.extend(StoryCommentsParser(each_post.id_post_comment).comments)
 
-    async def _make_request(self, **kwargs):
+    async def _make_request(self, **kwargs) -> dict:
+        """
+        Makes an asynchronous HTTP POST request.
+
+        :param kwargs: Additional parameters for the request.
+                       For 'get_story_comments' action:
+                           - story_id: ID of the story.
+                           - last_comment_id (optional): ID of the last comment.
+                           - start_comment_id (optional): ID of the start comment.
+                       For 'get_comments_by_ids' action:
+                           - ids: Comma-separated IDs of the comments.
+                       For 'get_comments_subtree' action:
+                           - id: ID of the comment.
+
+        :return: The JSON response from the server.
+        """
         url = 'https://pikabu.ru/ajax/comments_actions.php'
         req_params = {'action': kwargs['action']}
 
@@ -164,147 +280,13 @@ class StoryCommentsParser:
         return result_in_json
 
 
-class Comment:
-    """
-    Describes a comment. Contains all the useful info of the comment.
-    To create takes html only, str format.
-    Comment object has:
-        - Author name and id
-        - Comment content HTML
-        - Comment metadata
-        - Comment id, and it's parent ids
-        - URL and id of a post if the comment is the post.
-
-    """
-
-    def __init__(self, parsed_comment: str):
-        self.soup = BeautifulSoup(parsed_comment, 'lxml')
-
-        self.content_tag_html = self.soup.find(class_='comment__content').prettify()
-        self._clean_soup()
-
-        self.metadata: dict = self._get_data_meta_from_soup()
-        self.author: dict = self._get_author()
-        self.id: int = int(self.soup.find('div', class_='comment').get('data-id'))
-        self.parent_id: int = self.metadata['pid']
-
-        self.url_post_comment: str = self._is_post()
-        self.id_post_comment: int = self._get_id_post_comment()
-
-        self._delete_useless()
-
-    def _clean_soup(self):
-        """
-        Cleans all unnecessary text from html.
-        Deletes tags:
-            comment__children
-            comment__tools
-            comment__controls
-            comment__content
-        """
-        classes_to_delete = ('comment__children', 'comment__tools',
-                             'comment__controls', 'comment__content')
-        for class_ in classes_to_delete:
-            tag_to_delete = self.soup.find(class_=class_)
-            if tag_to_delete:
-                tag_to_delete.extract()
-
-    def _get_data_meta_from_soup(self) -> dict:
-        """
-        Gets all data_meta from the html.
-        Html Example:
-        <div class="comment"  id="comment_271331177" data-id="271331177" data-author-id="2927026"
-        data-author-avatar="https://cs.pikabu.ru/images/def_avatar/def_avatar_80.png"
-        data-meta="pid=0;aid=2927026;sid=10167269;said=6487807;d=2023-04-22T08:11:16+03:00;de=0;ic=0;r=6;av=6,0"
-        data-story-subs-code="0" data-indent="0">
-
-        data-meta explication:
-        pid=0;                             - 0 if root comment, parent_id if has parent
-        aid=1381602;                       - id of the author of the comment
-        sid=10085566;                      - id of the story where the comment was publishes
-        said=4874925;                      - id of the author of the story where the comment was publishes
-        d=2023-03-28T17:41:30+03:00;       - date
-        de=0;                              - 0 if not deleted, 1 if deleted
-        ic=0;                              - No idea :(
-        r=1294;                            - total rating of the comment
-        av=1367,73;                        - votes for + / votes for -
-        hc                                 - head comment may be? no idea :(
-        avh=-20282962854:-20282963014      - no idea :(
-
-        av in data_meta dict is divided to av+ and av- (votes in favor, votes against)
-
-        :return: data_meta dict
-        """
-        # Raw data-meta is a string 'pid=0;aid=3296271;sid=10085566;said=4874925;...'
-        data_meta: str = self.soup.find('div', class_='comment').get('data-meta')
-        data_meta: list = data_meta.split(';')
-
-        data_meta: dict = {data.split('=')[0]: data.split('=')[1] for data in data_meta if '=' in data}
-
-        # Make rating data look good
-        try:
-            vote_up, vote_down = data_meta['av'].split(',')
-            data_meta.pop('av')
-            data_meta['av+'] = vote_up
-            data_meta['av-'] = vote_down
-        except KeyError:
-            data_meta['r'] = None
-            data_meta['av+'] = None
-            data_meta['av-'] = None
-
-        # Convert all values to int format if possible
-        for key, value in data_meta.items():
-            try:
-                data_meta[key] = int(value)
-            except (ValueError, TypeError):
-                pass
-
-        return data_meta
-
-    def _get_author(self) -> dict:
-        """
-        Gets the info about author
-        Returns a dict with name and id
-        """
-        user_tag = self.soup.find(class_='comment__user')
-        return {'name': user_tag.get('data-name'),
-                'id': int(user_tag.get('data-id'))}
-
-    def _is_post(self) -> str:
-        """
-        Checks if comments is a post by its html.
-        :return: post-url if a post or '' if not a post
-        """
-        post = self.soup.find('div', class_='comment_comstory')
-        return post.get('data-url') if post else ''
-
-    def _get_id_post_comment(self) -> int:
-        """
-        Gets post_id of the post if the comment is a post
-        """
-        if self.url_post_comment:
-            id_post = int(self.url_post_comment[self.url_post_comment.rfind('_') + 1:])
-        else:
-            id_post = 0
-        return id_post
-
-    def _delete_useless(self):
-        """
-        Deletes useless information to save memory
-            - self soup
-        """
-        del self.soup
 
 
 if __name__ == '__main__':
-    #a = StoryCommentsParser(story_id=10085566)  # https://pikabu.ru/story/biznes_ideya_10085566#comments 1900 comments
-    a = StoryCommentsParser(story_id=10161553)  # 492 comments
-    #a = StoryCommentsParser(story_id=5_555_555) #10 comments
+    # a = StoryCommentsParser(story_id=10085566)  # https://pikabu.ru/story/biznes_ideya_10085566#comments 1900 comments
+    #a = StoryCommentsParser(story_id=10161553)  # 492 comments
+    # a = StoryCommentsParser(story_id=5_555_555) #10 comments
     # a = StoryCommentsParser(story_id=10182975) #https://pikabu.ru/story/otzyiv_o_bmw_x6_10182975
-
-    #a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
-
-    #a = StoryCommentsParser(story_id=10208614, go_deep=True) # a lot of posts
-
+    a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
+    # a = StoryCommentsParser(story_id=10208614, go_deep=True) # a lot of posts
     # a = StoryCommentsParser(story_id=10216528)
-    # 10216528 #6 of 5
