@@ -1,30 +1,9 @@
 import asyncio
-import time
-
 import aiohttp
 import random
 import json
-import threading
 
 from comment import Comment
-
-TIME = 0
-COUNT = 0
-
-
-def tick(func):
-    def wrapper(*args, **kwargs):
-        go = time.time()
-        result = func(*args, **kwargs)
-        stop = time.time()
-        it_took = stop - go
-        print(f"{func.__name__} took", it_took)
-        global TIME, COUNT
-        TIME += it_took
-        COUNT += 1
-        return result
-
-    return wrapper
 
 
 class StoryCommentsParser:
@@ -66,14 +45,8 @@ class StoryCommentsParser:
         raw_data = asyncio.run(self._async_get_comments())
         self.comments: list = self._convert_raw_data_to_comment_objects(raw_data)
 
-        # Deep parse
         if go_deep:
             self._get_deep_comments()
-
-        # Check
-        if self.total == len(self.comments):
-            print(f'All good {self.total=}')
-        print(*[comment.id for comment in self.comments])
 
     def _the_first_request(self) -> (int, int, list):
         """
@@ -96,7 +69,6 @@ class StoryCommentsParser:
         :return: Tuple of dicts representing server responses. Each dict contains the following keys: 'result',
                  'message', 'message_code', and 'data'. The 'data' key provides access to a list of dicts,
                  where each dict contains the 'id' and 'html' keys.
-
         """
         # Get a list of dicts. Each dict contains keys: result, message, message code, data.
         # data contains a dict with keys: id and html
@@ -106,7 +78,6 @@ class StoryCommentsParser:
         return responses
 
     @staticmethod
-    @tick
     def _convert_raw_data_to_comment_objects(raw_data) -> list:
         """
         Converts HTMLs to Comment objects.
@@ -125,56 +96,6 @@ class StoryCommentsParser:
                 comment = comment['html']
                 list_of_comment_objects.append(Comment(comment))
         return list_of_comment_objects
-
-    @staticmethod
-    @tick
-    def _new_convert_logic(raw_data):
-        """
-        9 seconds for 4000 comments
-        """
-        def create_object(com):
-            return Comment(com)
-
-        results = []
-
-        def worker(com):
-            result = create_object(com)
-            results.append(result)
-
-        for each in raw_data:
-            each = each['data']
-
-            threads = []
-            for comment in each:
-                comment = comment['html']
-                thread = threading.Thread(target=worker, args=(comment,))
-                thread.start()
-                threads.append(thread)
-
-            for thread in threads:
-                thread.join()
-
-        return results
-
-    @staticmethod
-    async def _new_convert_logic_async(raw_data):
-        """
-        33 second for 4000 comments
-        """
-        start = time.time()
-        responses: dict = raw_data
-        comments_to_return = []
-        htmls = []
-        for response in responses:
-            response = response['data'] # response - list of comments dicts
-            htmls.extend([comment['html'] for comment in response])
-
-        loop = asyncio.get_event_loop()
-        comments = await asyncio.gather(
-            *[loop.run_in_executor(None, Comment, parsed_comment) for parsed_comment in htmls])
-        comments_to_return.extend(comments)
-        print(f'{time.time() - start} logic2 async')
-        return comments_to_return
 
     def _group_comments_for_async_request(self) -> list:
         """
@@ -280,13 +201,15 @@ class StoryCommentsParser:
         return result_in_json
 
 
-
-
 if __name__ == '__main__':
-    # a = StoryCommentsParser(story_id=10085566)  # https://pikabu.ru/story/biznes_ideya_10085566#comments 1900 comments
-    #a = StoryCommentsParser(story_id=10161553)  # 492 comments
-    # a = StoryCommentsParser(story_id=5_555_555) #10 comments
-    # a = StoryCommentsParser(story_id=10182975) #https://pikabu.ru/story/otzyiv_o_bmw_x6_10182975
-    a = StoryCommentsParser(story_id=6740346) #4000 comments badcomedian
-    # a = StoryCommentsParser(story_id=10208614, go_deep=True) # a lot of posts
-    # a = StoryCommentsParser(story_id=10216528)
+    # ~4000 comments, 1 comment-post
+    # a = StoryCommentsParser(story_id=6740346)
+
+    # ~500 comments
+    # a = StoryCommentsParser(story_id=10161553)
+
+    # big amount of comment-posts
+    # a = StoryCommentsParser(story_id=10208614, go_deep=True)
+
+    # print(f'We got {len(a.comments)} comments')
+    pass

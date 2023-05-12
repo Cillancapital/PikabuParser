@@ -3,79 +3,61 @@ from bs4 import BeautifulSoup
 
 class Comment:
     """
-    Describes a comment. Contains all the useful info of the comment.
-    To create takes html only, str format.
-    Comment object has:
-        - Author name and id
-        - Comment content HTML
-        - Comment metadata
-        - Comment id, and it's parent ids
-        - URL and id of a post if the comment is the post.
+    Represents a comment and contains all the useful information of the comment.
+    To create an instance, it takes a parsed comment in HTML format as a string.
 
+    Comment object has the following attributes:
+        - content: BS object. Serves for the further parsing.
+        - metadata: is a dict with following information:
+            - id: Comment ID
+            - author: Nickname of the author of the comment
+            - pid: The parent ID (0 if no parent)
+            - aid: ID of the author of the comment
+            - sid: ID of the story where the comment was published
+            - said: ID of the author of the story where the comment was published
+            - d: Date the comment was published in the format '2023-03-28T17:41:30+03:00'
+            - de: Unknown definition
+            - ic: Unknown definition
+            - r: Total rating of the comment
+            - av+: Votes in favor
+            - av-: Votes against
+        - url_post_comment: URL of the post if the comment is a post, otherwise an empty string
+        - id_post_comment: ID of the post if the comment is a post, otherwise 0
     """
 
     def __init__(self, parsed_comment: str):
         self.soup = BeautifulSoup(parsed_comment, 'lxml')
-
-        self.content_tag_html = self.soup.find(class_='comment__content').prettify()
-        self._clean_soup()
-
+        self.content: BeautifulSoup = self._get_content()
         self.metadata: dict = self._get_data_meta_from_soup()
-        self.author: dict = self._get_author()
-        self.id: int = int(self.soup.find('div', class_='comment').get('data-id'))
-        self.parent_id: int = self.metadata['pid']
-
         self.url_post_comment: str = self._is_post()
         self.id_post_comment: int = self._get_id_post_comment()
+        del self.soup
 
-        self._delete_useless()
+    def _get_content(self) -> BeautifulSoup:
+        """
+        Extracts and returns the BS object of the comment content.
 
-    def _clean_soup(self):
+        Returns:
+            str: The BeautifulSoup object of the comment content.
         """
-        Cleans all unnecessary text from html.
-        Deletes tags:
-            comment__children
-            comment__tools
-            comment__controls
-            comment__content
-        """
-        classes_to_delete = ('comment__children', 'comment__tools',
-                             'comment__controls', 'comment__content')
-        for class_ in classes_to_delete:
-            tag_to_delete = self.soup.find(class_=class_)
-            if tag_to_delete:
-                tag_to_delete.extract()
+        content_html_tag = self.soup.find(class_='comment__content')
+        content_html_tag.extract()
+        return content_html_tag
 
     def _get_data_meta_from_soup(self) -> dict:
         """
-        Gets all data_meta from the html.
-        Html Example:
-        <div class="comment"  id="comment_271331177" data-id="271331177" data-author-id="2927026"
-        data-author-avatar="https://cs.pikabu.ru/images/def_avatar/def_avatar_80.png"
-        data-meta="pid=0;aid=2927026;sid=10167269;said=6487807;d=2023-04-22T08:11:16+03:00;de=0;ic=0;r=6;av=6,0"
-        data-story-subs-code="0" data-indent="0">
+        Retrieves and returns all metadata from the HTML.
 
-        data-meta explication:
-        pid=0;                             - 0 if root comment, parent_id if has parent
-        aid=1381602;                       - id of the author of the comment
-        sid=10085566;                      - id of the story where the comment was publishes
-        said=4874925;                      - id of the author of the story where the comment was publishes
-        d=2023-03-28T17:41:30+03:00;       - date
-        de=0;                              - 0 if not deleted, 1 if deleted
-        ic=0;                              - No idea :(
-        r=1294;                            - total rating of the comment
-        av=1367,73;                        - votes for + / votes for -
-        hc                                 - head comment may be? no idea :(
-        avh=-20282962854:-20282963014      - no idea :(
-
-        av in data_meta dict is divided to av+ and av- (votes in favor, votes against)
-
-        :return: data_meta dict
+        Returns:
+            dict: A dictionary containing the extracted metadata.
         """
-        # Raw data-meta is a string 'pid=0;aid=3296271;sid=10085566;said=4874925;...'
-        data_meta: str = self.soup.find('div', class_='comment').get('data-meta')
-        data_meta: list = data_meta.split(';')
 
+        data = {'id': int(self.soup.find(class_='comment').get('data-id')),
+                'author': self._get_author()}
+
+        # Raw data-meta is a string 'pid=0;aid=3296271;sid=10085566;said=4874925;...'
+        data_meta: str = self.soup.find(class_='comment').get('data-meta')
+        data_meta: list = data_meta.split(';')
         data_meta: dict = {data.split('=')[0]: data.split('=')[1] for data in data_meta if '=' in data}
 
         # Make rating data look good
@@ -96,38 +78,39 @@ class Comment:
             except (ValueError, TypeError):
                 pass
 
-        return data_meta
+        data.update(data_meta)
 
-    def _get_author(self) -> dict:
+        return data
+
+    def _get_author(self) -> str:
         """
-        Gets the info about author
-        Returns a dict with name and id
+        Retrieves and returns the author nickname of the comment.
+
+        Returns:
+            str: The author's nickname of the comment.
         """
         user_tag = self.soup.find(class_='comment__user')
-        return {'name': user_tag.get('data-name'),
-                'id': int(user_tag.get('data-id'))}
+        return user_tag.get('data-name')
 
     def _is_post(self) -> str:
         """
-        Checks if comments is a post by its html.
-        :return: post-url if a post or '' if not a post
+        Checks if the comment is a post based on its HTML.
+
+        Returns:
+            str: The post URL if the comment is a post, otherwise an empty string.
         """
-        post = self.soup.find('div', class_='comment_comstory')
+        post = self.soup.find(class_='comment_comstory')
         return post.get('data-url') if post else ''
 
     def _get_id_post_comment(self) -> int:
         """
-        Gets post_id of the post if the comment is a post
+        Retrieves and returns the post ID of the comment if it is a post.
+
+        Returns:
+            int: The post ID if the comment is a post, otherwise 0.
         """
         if self.url_post_comment:
             id_post = int(self.url_post_comment[self.url_post_comment.rfind('_') + 1:])
         else:
             id_post = 0
         return id_post
-
-    def _delete_useless(self):
-        """
-        Deletes useless information to save memory
-            - self soup
-        """
-        del self.soup
