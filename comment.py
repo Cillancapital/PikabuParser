@@ -1,4 +1,5 @@
 from bs4 import BeautifulSoup
+import re
 
 
 class Comment:
@@ -114,3 +115,58 @@ class Comment:
         else:
             id_post = 0
         return id_post
+
+    def manage_content(self):
+        """
+        Retrieves text, pictures, gifs and videos links from self comment content soup.
+
+        Return: ?
+        """
+        def get_text():
+            def clean_text_from_youtube_marks(some_text):
+                youtube_pattern = re.compile(r'YouTube●\d+:\d+')
+                return re.sub(youtube_pattern, '', some_text)
+
+            text = self.content.text.replace('\n', '').replace('\t', '').strip()
+            if text:
+                text = clean_text_from_youtube_marks(text)
+                text = text.encode('utf-8').decode()
+                return text
+            else:
+                return ''
+
+        def get_pics():
+            def delete_video_previews_and_gifs(inner_img_links_list):
+                if not inner_img_links_list:
+                    return []
+                clean_list = [pic for pic in inner_img_links_list if
+                              '.gif' not in pic and 'https://i.ytimg.com' not in pic]
+                return clean_list if clean_list else []
+
+            images_html = self.content.findAll('img')
+            if images_html:
+                # for old html structure
+                img_links_list = [img.get('src') for img in images_html]
+                if None not in img_links_list:
+                    return delete_video_previews_and_gifs(img_links_list)
+                else:
+                    # for mew html structure
+                    img_links_list = [img.get('data-src') for img in images_html]
+                    return delete_video_previews_and_gifs(img_links_list)
+            else:
+                return []
+
+        def get_gifs():
+            gif_html = self.content.findAll(class_='player player_width_limit')
+            gif_links_list = [gif.get('data-source') for gif in gif_html]
+            return gif_links_list if gif_links_list else []
+
+        def get_videos():
+            videos_html = self.content.findAll(class_='comment-external-video__content')
+            video_links_list = [video.get('data-external-link') for video in videos_html]
+            return video_links_list if video_links_list else []
+
+        def get_comment_link():
+            return f"https://pikabu.ru/story/_{self.metadata['sid']}?cid={self.metadata['id']}"
+
+        return get_text(), get_pics(), get_gifs(), get_videos(), get_comment_link()

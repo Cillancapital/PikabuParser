@@ -206,10 +206,17 @@ if __name__ == '__main__':
     # a = StoryCommentsParser(story_id=6740346)
 
     # ~500 comments
-    # a = StoryCommentsParser(story_id=10161553)
+    a = StoryCommentsParser(story_id=10161553)
 
     # big amount of comment-posts
     # a = StoryCommentsParser(story_id=10208614, go_deep=True)
 
-    # print(f'We got {len(a.comments)} comments')
+    # 5000 comments, ~ 2000 more if go_deep is True
+    # a = StoryCommentsParser(story_id=7554914, go_deep=False)
+
+    for com in a.comments:
+        com = com.manage_content()
+        text, *rest = com
+        print(text[:30], *rest)
+
     pass
