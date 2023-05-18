@@ -1,3 +1,5 @@
+import asyncio
+
 from bs4 import BeautifulSoup
 import re
 
@@ -170,3 +172,32 @@ class Comment:
             return f"https://pikabu.ru/story/_{self.metadata['sid']}?cid={self.metadata['id']}"
 
         return get_text(), get_pics(), get_gifs(), get_videos(), get_comment_link()
+
+
+if __name__ == '__main__':
+    # testing
+    import aiohttp
+    import json
+
+    async def request_one_comment_only(comment_ids):
+        url = 'https://pikabu.ru/ajax/comments_actions.php'
+        data = {'action': 'get_comments_by_ids',
+                'ids': comment_ids}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url,
+                                    data=data,
+                                    params={'g': 'goog'},
+                                    headers={'User-Agent': 'Chrome/108.0.0.0'},
+                                    ) as response:
+                result = await response.text()
+        result_in_json = json.loads(result)
+        return result_in_json['data'][0]['html']
+
+    # 1 picture 273116029
+    # 1 YouTube video 273584720
+    # 1 pic and 1 gif 273546462
+    ids = '273546462'
+    html = asyncio.run(request_one_comment_only(ids))
+    com = Comment(html)
+    print(com.manage_content())
+
